@@ -190,23 +190,30 @@ int mem_openmem(void **buffptr,   /* I - address of memory pointer          */
     int ii;
 
     *handle = -1;
+    FFLOCK;
     for (ii = 0; ii < NMAXFILES; ii++)  /* find empty slot in handle table */
     {
         if (memTable[ii].memaddrptr == 0)
         {
+            /* CRITICAL: Mark slot as allocated IMMEDIATELY to prevent race */
+            /* We use buffptr as a non-NULL marker, will set properly below */
+            memTable[ii].memaddrptr = (char **) buffptr;
             *handle = ii;
             break;
         }
     }
-    if (*handle == -1)
+    if (*handle == -1){
+       FFUNLOCK;
        return(TOO_MANY_FILES);    /* too many files opened */
+    }
 
-    memTable[ii].memaddrptr = (char **) buffptr; /* pointer to start addres */
+    /* Now initialize the rest of the slot (already marked as allocated above) */
     memTable[ii].memsizeptr = buffsize;     /* allocated size of memory */
     memTable[ii].deltasize = deltasize;     /* suggested realloc increment */
     memTable[ii].fitsfilesize = *buffsize;  /* size of FITS file (upper limit) */
     memTable[ii].currentpos = 0;            /* at beginning of the file */
     memTable[ii].mem_realloc = memrealloc;  /* memory realloc function */
+    FFUNLOCK;   /* unlock AFTER all writes to memTable[] */
     return(0);
 }
 /*--------------------------------------------------------------------------*/
@@ -218,19 +225,25 @@ int mem_createmem(size_t msize, int *handle)
     int ii;
 
     *handle = -1;
+    FFLOCK;
     for (ii = 0; ii < NMAXFILES; ii++)  /* find empty slot in handle table */
     {
         if (memTable[ii].memaddrptr == 0)
         {
+            /* CRITICAL: Mark slot as allocated IMMEDIATELY to prevent race */
+            /* Use a temporary non-NULL marker; will set proper value below */
+            memTable[ii].memaddrptr = (char **)&memTable[ii].memaddr;
             *handle = ii;
             break;
         }
     }
-    if (*handle == -1)
+    if (*handle == -1){
+       FFUNLOCK;
        return(TOO_MANY_FILES);    /* too many files opened */
+    }
 
-    /* use the internally allocated memaddr and memsize variables */
-    memTable[ii].memaddrptr = &memTable[ii].memaddr;
+    /* Now initialize the rest of the slot (already marked as allocated above) */
+    /* Note: memaddrptr was already set above, but we set memsizeptr here */
     memTable[ii].memsizeptr = &memTable[ii].memsize;
 
     /* allocate initial block of memory for the file */
@@ -240,6 +253,8 @@ int mem_createmem(size_t msize, int *handle)
         if ( !(memTable[ii].memaddr) )
         {
             ffpmsg("malloc of initial memory failed (mem_createmem)");
+            memTable[ii].memaddrptr = 0;  /* mark slot as free again */
+            FFUNLOCK;
             return(FILE_NOT_OPENED);
         }
     }
@@ -250,6 +265,7 @@ int mem_createmem(size_t msize, int *handle)
     memTable[ii].fitsfilesize = 0;
     memTable[ii].currentpos = 0;
     memTable[ii].mem_realloc = realloc;
+    FFUNLOCK;
     return(0);
 }
 /*--------------------------------------------------------------------------*/
