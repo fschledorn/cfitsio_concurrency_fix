@@ -46,6 +46,7 @@ FITSfile *FptrTable[NMAXFILES];  /* this table of Fptr pointers is */
                                  /* used by fits_already_open */
 
 int need_to_initialize = 1;    /* true if CFITSIO has not been initialized */
+static int cfitsio_is_initialized = 0;  /* protected by FFLOCK */
 int no_of_drivers = 0;         /* number of currently defined I/O drivers */
 
 static int pixel_filter_helper(fitsfile **fptr, char *outfile,
@@ -143,13 +144,10 @@ int ffomem(fitsfile **fptr,      /* O - FITS file pointer                   */
 
     *fptr = 0;                   /* initialize null file pointer */
 
-    if (need_to_initialize)           /* this is called only once */
-    {
-        *status = fits_init_cfitsio();
-
-        if (*status > 0)
-            return(*status);
-    }
+    /* Ensure cfitsio is initialized (fits_init_cfitsio has its own lock) */
+    *status = fits_init_cfitsio();
+    if (*status > 0)
+        return(*status);
 
     url = (char *) name;
     while (*url == ' ')  /* ignore leading spaces in the file spec */
@@ -630,9 +628,8 @@ int ffopen(fitsfile **fptr,      /* O - FITS file pointer                   */
     *fptr = 0;              /* initialize null file pointer */
     writecopy = 0;  /* have we made a write-able copy of the input file? */
 
-    if (need_to_initialize) {          /* this is called only once */
-       *status = fits_init_cfitsio();
-    }
+    /* Ensure cfitsio is initialized (fits_init_cfitsio has its own lock) */
+    *status = fits_init_cfitsio();
     
     if (*status > 0)
         return(*status);
@@ -4053,9 +4050,8 @@ int ffinit(fitsfile **fptr,      /* O - FITS file pointer                   */
        *status = 0;
     }
 
-    if (need_to_initialize)  {          /* this is called only once */
-        *status = fits_init_cfitsio();
-    }
+    /* Ensure cfitsio is initialized (fits_init_cfitsio has its own lock) */
+    *status = fits_init_cfitsio();
 
     if (*status > 0)
         return(*status);
@@ -4275,9 +4271,8 @@ int ffimem(fitsfile **fptr,      /* O - FITS file pointer                   */
 
     *fptr = 0;              /* initialize null file pointer */
 
-    if (need_to_initialize)    {        /* this is called only once */
-       *status = fits_init_cfitsio();
-    }
+    /* Ensure cfitsio is initialized (fits_init_cfitsio has its own lock) */
+    *status = fits_init_cfitsio();
     
     if (*status > 0)
         return(*status);
@@ -4411,7 +4406,7 @@ int fits_init_cfitsio(void)
     FFLOCK;   /* lockout other threads while executing this critical */
               /* section of code  */
 
-    if (need_to_initialize == 0) { /* already initialized? */
+    if (cfitsio_is_initialized) { /* already initialized? */
       FFUNLOCK;
       return(0);
     }
@@ -5330,6 +5325,7 @@ int fits_init_cfitsio(void)
 
     /* reset flag.  Any other threads will now not need to call this routine */
     need_to_initialize = 0;
+    cfitsio_is_initialized = 1;
 
     FFUNLOCK;
     return(status);
