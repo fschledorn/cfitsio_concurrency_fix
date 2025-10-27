@@ -94,7 +94,7 @@ if !NOGSIFTP
 libcfitsio_la_SOURCES += ${GSIFTP_SRC}
 endif
 
-libcfitsio_la_CFLAGS = $(AM_CFLAGS) @DEFS@
+libcfitsio_la_CFLAGS = $(AM_CFLAGS) @DEFS@ -D_REENTRANT -pthread
 libcfitsio_la_LIBADD = -lm ${LIBS_CURL} ${LIBS} libcfitsio_swapproc.la
 libcfitsio_la_LDFLAGS = -version-info @version_info@
 

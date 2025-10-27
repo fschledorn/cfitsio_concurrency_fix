@@ -1,0 +1,8 @@
+# ThreadSanitizer suppressions for cfitsio concurrency tests
+
+# Suppress benign races in std::cout from test program
+# Multiple threads printing to stdout is safe (just interleaved output)
+race:std::basic_ostream
+race:std::ostreambuf_iterator
+race:std::__1::basic_ostream
+race:std::__1::ostreambuf_iterator
