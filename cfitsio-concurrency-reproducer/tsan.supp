@@ -6,3 +6,8 @@ race:std::basic_ostream
 race:std::ostreambuf_iterator
 race:std::__1::basic_ostream
 race:std::__1::ostreambuf_iterator
+
+# Suppress benign races on Fitsio_Pthread_Status
+# This global is written by FFLOCK/FFUNLOCK macros to store pthread return values
+# The writes are atomic and the value is not used for synchronization
+race:Fitsio_Pthread_Status
