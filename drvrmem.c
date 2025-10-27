@@ -242,8 +242,7 @@ int mem_createmem(size_t msize, int *handle)
        return(TOO_MANY_FILES);    /* too many files opened */
     }
 
-    /* Now initialize the rest of the slot (already marked as allocated above) */
-    /* Note: memaddrptr was already set above, but we set memsizeptr here */
+    /* Initialize memsizeptr while still holding the lock */
     memTable[ii].memsizeptr = &memTable[ii].memsize;
 
     /* allocate initial block of memory for the file */
@@ -259,13 +258,15 @@ int mem_createmem(size_t msize, int *handle)
         }
     }
 
-    /* set initial state of the file */
+    /* Set initial state of the file while still holding the lock */
+    /* to prevent other threads from seeing partially initialized slot */
     memTable[ii].memsize = msize;
     memTable[ii].deltasize = 2880;
     memTable[ii].fitsfilesize = 0;
     memTable[ii].currentpos = 0;
     memTable[ii].mem_realloc = realloc;
-    FFUNLOCK;
+    
+    FFUNLOCK;   /* unlock AFTER all memTable[] writes complete */
     return(0);
 }
 /*--------------------------------------------------------------------------*/
@@ -276,6 +277,8 @@ int mem_truncate(int handle, LONGLONG filesize)
 {
     char *ptr;
 
+    FFLOCK;  /* Protect memTable access from concurrent operations */
+
     /* call the memory reallocation function, if defined */
     if ( memTable[handle].mem_realloc )
     {    /* explicit LONGLONG->size_t cast */
@@ -285,6 +288,7 @@ int mem_truncate(int handle, LONGLONG filesize)
         if (!ptr)
         {
             ffpmsg("Failed to reallocate memory (mem_truncate)");
+            FFUNLOCK;
             return(MEMORY_ALLOCATION);
         }
 
@@ -302,6 +306,8 @@ int mem_truncate(int handle, LONGLONG filesize)
 
     memTable[handle].currentpos = filesize;
     memTable[handle].fitsfilesize = filesize;
+
+    FFUNLOCK;
     return(0);
 }
 /*--------------------------------------------------------------------------*/
@@ -1124,7 +1130,9 @@ int mem_size(int handle, LONGLONG *filesize)
   return the size of the file; only called when the file is first opened
 */
 {
+    FFLOCK;  /* Protect memTable field read from concurrent modifications */
     *filesize = memTable[handle].fitsfilesize;
+    FFUNLOCK;
     return(0);
 }
 /*--------------------------------------------------------------------------*/
@@ -1133,10 +1141,14 @@ int mem_close_free(int handle)
   close the file and free the memory.
 */
 {
+    FFLOCK;  /* Protect memTable slot freeing from concurrent allocation */
+
     free( *(memTable[handle].memaddrptr) );
 
     memTable[handle].memaddrptr = 0;
     memTable[handle].memaddr = 0;
+
+    FFUNLOCK;
     return(0);
 }
 /*--------------------------------------------------------------------------*/
@@ -1145,8 +1157,12 @@ int mem_close_keep(int handle)
   close the memory file but do not free the memory.
 */
 {
+    FFLOCK;  /* Protect memTable slot freeing from concurrent allocation */
+
     memTable[handle].memaddrptr = 0;
     memTable[handle].memaddr = 0;
+
+    FFUNLOCK;
     return(0);
 }
 /*--------------------------------------------------------------------------*/
@@ -1158,25 +1174,39 @@ int mem_close_comp(int handle)
 {
     int status = 0;
     size_t compsize;
+    FILE *fileptr;
+    char *memaddr;
+    LONGLONG fitsfilesize;
+
+    /* Copy data while holding lock to avoid races with concurrent operations */
+    FFLOCK;
+    fileptr = memTable[handle].fileptr;
+    memaddr = memTable[handle].memaddr;
+    fitsfilesize = memTable[handle].fitsfilesize;
+    FFUNLOCK;
 
     /* compress file in  memory to a .gz disk file */
 
-    if(compress2file_from_mem(memTable[handle].memaddr,
-              (size_t) (memTable[handle].fitsfilesize), 
-              memTable[handle].fileptr,
+    if(compress2file_from_mem(memaddr,
+              (size_t) fitsfilesize, 
+              fileptr,
               &compsize, &status ) )
     {
             ffpmsg("failed to copy memory file to file (mem_close_comp)");
             status = WRITE_ERROR;
     }
 
+    FFLOCK;  /* Protect memTable slot freeing from concurrent allocation */
+
     free( memTable[handle].memaddr );   /* free the memory */
     memTable[handle].memaddrptr = 0;
     memTable[handle].memaddr = 0;
 
+    FFUNLOCK;
+
     /* close the compressed disk file (except if it is 'stdout' */
-    if (memTable[handle].fileptr != stdout)
-        fclose(memTable[handle].fileptr);
+    if (fileptr != stdout)
+        fclose(fileptr);
 
     return(status);
 }
@@ -1186,10 +1216,17 @@ int mem_seek(int handle, LONGLONG offset)
   seek to position relative to start of the file.
 */
 {
+    FFLOCK;  /* Protect memTable field access from concurrent operations */
+
     if (offset >  memTable[handle].fitsfilesize )
+    {
+        FFUNLOCK;
         return(END_OF_FILE);
+    }
 
     memTable[handle].currentpos = offset;
+
+    FFUNLOCK;
     return(0);
 }
 /*--------------------------------------------------------------------------*/
@@ -1198,14 +1235,21 @@ int mem_read(int hdl, void *buffer, long nbytes)
   read bytes from the current position in the file
 */
 {
+    FFLOCK;  /* Protect memTable access from concurrent close/truncate operations */
+
     if (memTable[hdl].currentpos + nbytes > memTable[hdl].fitsfilesize)
+    {
+        FFUNLOCK;
         return(END_OF_FILE);
+    }
 
     memcpy(buffer,
            *(memTable[hdl].memaddrptr) + memTable[hdl].currentpos,
            nbytes);
 
     memTable[hdl].currentpos += nbytes;
+
+    FFUNLOCK;
     return(0);
 }
 /*--------------------------------------------------------------------------*/
@@ -1217,6 +1261,8 @@ int mem_write(int hdl, void *buffer, long nbytes)
     size_t newsize;
     char *ptr;
 
+    FFLOCK;  /* Protect memTable access from concurrent operations */
+
     if ((size_t) (memTable[hdl].currentpos + nbytes) > 
          *(memTable[hdl].memsizeptr) )
     {
@@ -1224,6 +1270,7 @@ int mem_write(int hdl, void *buffer, long nbytes)
         if (!(memTable[hdl].mem_realloc))
         {
             ffpmsg("realloc function not defined (mem_write)");
+            FFUNLOCK;
             return(WRITE_ERROR);
         }
 
@@ -1245,6 +1292,7 @@ int mem_write(int hdl, void *buffer, long nbytes)
         if (!ptr)
         {
             ffpmsg("Failed to reallocate memory (mem_write)");
+            FFUNLOCK;
             return(MEMORY_ALLOCATION);
         }
 
@@ -1261,6 +1309,8 @@ int mem_write(int hdl, void *buffer, long nbytes)
     memTable[hdl].fitsfilesize =
                maxvalue(memTable[hdl].fitsfilesize,
                         memTable[hdl].currentpos);
+
+    FFUNLOCK;
     return(0);
 }
 
